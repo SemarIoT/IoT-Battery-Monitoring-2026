@@ -1,0 +1,113 @@
+#include <ESP8266WiFi.h>
+#include <PubSubClient.h>
+#include <ArduinoJson.h>
+
+//==============================
+// WiFi
+//==============================
+const char* ssid     = "IoT";
+const char* password = "agusramelan";
+
+//==============================
+// ThingsBoard
+//==============================
+const char* mqtt_server  = "thingsboard.cloud";
+const int   mqtt_port    = 1883;
+const char* accessToken  = "WTEeZ6DbCuAix6tApUZM";
+
+//==============================
+// Pin
+//==============================
+#define LED_PIN    5   // D1
+#define BUZZER_PIN 4   // D2
+
+WiFiClient espClient;
+PubSubClient client(espClient);
+
+bool ledState    = false;
+bool buzzerState = false;
+
+void setupWifi() {
+  delay(10);
+  Serial.println();
+  Serial.print("Connecting to WiFi: ");
+  Serial.println(ssid);
+
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println();
+  Serial.print("WiFi connected, IP: ");
+  Serial.println(WiFi.localIP());
+}
+
+void onMqttMessage(char* topic, byte* payload, unsigned int length) {
+  StaticJsonDocument<256> doc;
+  DeserializationError err = deserializeJson(doc, payload, length);
+  if (err) {
+    Serial.print("JSON parse failed: ");
+    Serial.println(err.c_str());
+    return;
+  }
+
+  String method   = doc["method"].as<String>();
+  String topicStr = String(topic);
+  String requestId = topicStr.substring(topicStr.lastIndexOf('/') + 1);
+  String responseTopic = "v1/devices/me/rpc/response/" + requestId;
+
+  if (method == "setLedState") {
+    ledState = doc["params"];
+    digitalWrite(LED_PIN, ledState ? HIGH : LOW);
+    client.publish(responseTopic.c_str(), ledState ? "true" : "false");
+  } else if (method == "setBuzzerState") {
+    buzzerState = doc["params"];
+    digitalWrite(BUZZER_PIN, buzzerState ? HIGH : LOW);
+    client.publish(responseTopic.c_str(), buzzerState ? "true" : "false");
+  } else if (method == "getLedState") {
+    client.publish(responseTopic.c_str(), ledState ? "true" : "false");
+  } else if (method == "getBuzzerState") {
+    client.publish(responseTopic.c_str(), buzzerState ? "true" : "false");
+  }
+
+  Serial.print("RPC method: ");
+  Serial.println(method);
+}
+
+void reconnect() {
+  while (!client.connected()) {
+    Serial.print("Connecting to ThingsBoard...");
+    if (client.connect("ESP8266Device", accessToken, NULL)) {
+      Serial.println("connected");
+      client.subscribe("v1/devices/me/rpc/request/+");
+    } else {
+      Serial.print("failed, rc=");
+      Serial.print(client.state());
+      Serial.println(" retry in 2s");
+      delay(2000);
+    }
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  pinMode(LED_PIN, OUTPUT);
+  pinMode(BUZZER_PIN, OUTPUT);
+  digitalWrite(LED_PIN, LOW);
+  digitalWrite(BUZZER_PIN, LOW);
+
+  setupWifi();
+  client.setServer(mqtt_server, mqtt_port);
+  client.setCallback(onMqttMessage);
+}
+
+void loop() {
+  if (WiFi.status() != WL_CONNECTED) {
+    setupWifi();
+  }
+  if (!client.connected()) {
+    reconnect();
+  }
+  client.loop();
+}
